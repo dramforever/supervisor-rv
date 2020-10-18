@@ -32,6 +32,7 @@ if 'GCCPREFIX' in os.environ:
 CMD_ASSEMBLER = CCPREFIX + 'as'
 CMD_DISASSEMBLER = CCPREFIX + 'objdump'
 CMD_BINARY_COPY = CCPREFIX + 'objcopy'
+CMD_LD = CCPREFIX + 'ld'
 
 Reg_alias = ['zero', 'ra', 'sp', 'gp', 'tp', 't0', 't1', 't2', 's0/fp', 's1', 'a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6', 
                 'a7', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10', 's11', 't3', 't4', 't5', 't6']
@@ -41,7 +42,7 @@ arch = 'rv32'
 
 def test_programs():
     tmp = tempfile.NamedTemporaryFile()
-    for prog in [CMD_ASSEMBLER, CMD_DISASSEMBLER, CMD_BINARY_COPY]:
+    for prog in [CMD_ASSEMBLER, CMD_DISASSEMBLER, CMD_BINARY_COPY, CMD_LD]:
         try:
             subprocess.check_call([prog, '--version'], stdout=tmp)
         except:
@@ -78,20 +79,46 @@ def byte_string_to_dword(val):
 # invoke assembler to compile instructions (in little endian RV32/64)
 # returns a byte string of encoded instructions, from lowest byte to highest byte
 # returns empty string on failure (in which case assembler messages are printed to stdout)
-def multi_line_asm(instr):
+def multi_line_asm(instr, origin=0):
     tmp_asm = tempfile.NamedTemporaryFile(delete=False)
     tmp_obj = tempfile.NamedTemporaryFile(delete=False)
     tmp_binary = tempfile.NamedTemporaryFile(delete=False)
+    tmp_ld = tempfile.NamedTemporaryFile(delete=False)
+    tmp_linked = tempfile.NamedTemporaryFile(delete=False)
 
     try:
+        format = {
+            'rv32': 'elf32-littleriscv',
+            'rv64': 'elf64-littleriscv'
+        }[arch]
+
+        linker_script = '''
+OUTPUT_ARCH("riscv:{}")
+OUTPUT_FORMAT("{}")
+
+SECTIONS {{
+    . = {};
+    .text : {{
+        * (.text)
+    }}
+}}
+'''.format(arch, format, origin)
+
+        tmp_ld.write(linker_script.encode('utf-8'))
+        tmp_ld.close()
+
         tmp_asm.write((instr + "\n").encode('utf-8'))
         tmp_asm.close()
+
         tmp_obj.close()
         tmp_binary.close()
+        tmp_linked.close()
         subprocess.check_output([
             CMD_ASSEMBLER,  tmp_asm.name, '-march={}i'.format(arch), '-o', tmp_obj.name])
         subprocess.check_call([
-            CMD_BINARY_COPY, '-j', '.text', '-O', 'binary', tmp_obj.name, tmp_binary.name])
+            CMD_LD, '-T', tmp_ld.name, '-o', tmp_linked.name, tmp_obj.name])
+        subprocess.check_call([
+            CMD_BINARY_COPY, '-j', '.text', '-O', 'binary', tmp_linked.name, tmp_binary.name])
         with open(tmp_binary.name, 'rb') as f:
             binary = f.read()
             return binary
@@ -100,10 +127,13 @@ def multi_line_asm(instr):
     except:
         print("Unexpected error:", sys.exc_info()[0])
     finally:
+        os.remove(tmp_ld.name)
         os.remove(tmp_asm.name)
         # object file won't exist if assembler fails
         if os.path.exists(tmp_obj.name):
             os.remove(tmp_obj.name)
+        if os.path.exists(tmp_linked.name):
+            os.remove(tmp_linked.name)
         os.remove(tmp_binary.name)
     # can only reach here when assembler fails
     return None
@@ -226,9 +256,8 @@ def run_T():
 
 def run_A(addr):
     print("one instruction per line, empty line to end.")
-    offset = addr & 0xfffffff
     prompt_addr = addr
-    asm = ".org {:#x}\n".format(offset)
+    asm = ".section .text\n"
     while True:
         line = raw_input('[0x%04x] ' % prompt_addr).strip()
         if line == '':
@@ -242,14 +271,14 @@ def run_A(addr):
             asm += ".word {:#x}\n".format(int(line, 16))
         except ValueError:
             # instruction text, check validity
-            if multi_line_asm(line) is None:
+            if multi_line_asm(asm + line + "\n", addr) is None:
                 # error occurred when running assembler, skip this line
                 continue
             asm += line + "\n"
-        prompt_addr = addr + len(multi_line_asm(asm)) - offset
+        prompt_addr = addr + len(multi_line_asm(asm, addr))
     # print(asm)
-    binary = multi_line_asm(asm)
-    for i in range(offset, len(binary), 4):
+    binary = multi_line_asm(asm, addr)
+    for i in range(0, len(binary), 4):
         outp.write(b'A')
         outp.write(int_to_byte_string(addr))
         outp.write(int_to_byte_string(4))
@@ -263,7 +292,7 @@ def run_F(addr, file_name):
     print("reading from file %s" % file_name)
     offset = addr & 0xfffffff
     prompt_addr = addr
-    asm = ".org {:#x}\n".format(offset)
+    asm = ".section .text\n"
     with open(file_name, "r") as f:
         for line in f:
             print('[0x%04x] %s' % (prompt_addr, line.strip()))
@@ -278,13 +307,13 @@ def run_F(addr, file_name):
                 asm += ".word {:#x}\n".format(int(line, 16))
             except ValueError:
                 # instruction text, check validity
-                if multi_line_asm(line) is None:
+                if multi_line_asm(asm + line + "\n", addr) is None:
                     # error occurred when running assembler, skip this line
                     continue
                 asm += line + "\n"
-            prompt_addr = addr + len(multi_line_asm(asm)) - offset
-    binary = multi_line_asm(asm)
-    for i in range(offset, len(binary), 4):
+            prompt_addr = addr + len(multi_line_asm(asm, addr))
+    binary = multi_line_asm(asm, addr)
+    for i in range(0, len(binary), 4):
         outp.write(b'A')
         outp.write(int_to_byte_string(addr))
         outp.write(int_to_byte_string(4))
