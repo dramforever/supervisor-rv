@@ -33,6 +33,7 @@ CMD_ASSEMBLER = CCPREFIX + 'as'
 CMD_DISASSEMBLER = CCPREFIX + 'objdump'
 CMD_BINARY_COPY = CCPREFIX + 'objcopy'
 CMD_LD = CCPREFIX + 'ld'
+KERNEL_ELF = '{}/../kernel/kernel.elf'.format(os.getcwd())
 
 Reg_alias = ['zero', 'ra', 'sp', 'gp', 'tp', 't0', 't1', 't2', 's0/fp', 's1', 'a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6', 
                 'a7', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 's9', 's10', 's11', 't3', 't4', 't5', 't6']
@@ -51,6 +52,13 @@ def test_programs():
             tmp.close()
             return False
     tmp.close()
+
+    try:
+        os.stat(KERNEL_ELF)
+    except FileNotFoundError:
+        print("Could not find compiled kernel at {}".format(KERNEL_ELF))
+        return False
+
     return True
 
 def output_binary(binary):
@@ -97,9 +105,21 @@ OUTPUT_ARCH("riscv:{}")
 OUTPUT_FORMAT("{}")
 
 SECTIONS {{
-    . = {};
+    . = 0x807F0000;
+    .bss : {{
+        *(.bss)
+    }}
+    . = 0x80000000;
     .text : {{
         * (.text)
+    }}
+    .rodata : {{
+        * (.rodata)
+    }}
+
+    . = {};
+    .text.asm : {{
+        * (.text.asm)
     }}
 }}
 '''.format(arch, format, origin)
@@ -116,9 +136,9 @@ SECTIONS {{
         subprocess.check_output([
             CMD_ASSEMBLER,  tmp_asm.name, '-march={}i'.format(arch), '-o', tmp_obj.name])
         subprocess.check_call([
-            CMD_LD, '-T', tmp_ld.name, '-o', tmp_linked.name, tmp_obj.name])
+            CMD_LD, '-T', tmp_ld.name, '-o', tmp_linked.name, tmp_obj.name, KERNEL_ELF])
         subprocess.check_call([
-            CMD_BINARY_COPY, '-j', '.text', '-O', 'binary', tmp_linked.name, tmp_binary.name])
+            CMD_BINARY_COPY, '-j', '.text.asm', '-O', 'binary', tmp_linked.name, tmp_binary.name])
         with open(tmp_binary.name, 'rb') as f:
             binary = f.read()
             return binary
@@ -257,7 +277,7 @@ def run_T():
 def run_A(addr):
     print("one instruction per line, empty line to end.")
     prompt_addr = addr
-    asm = ".section .text\n"
+    asm = ".section .text.asm\n"
     while True:
         line = raw_input('[0x%04x] ' % prompt_addr).strip()
         if line == '':
@@ -292,7 +312,7 @@ def run_F(addr, file_name):
     print("reading from file %s" % file_name)
     offset = addr & 0xfffffff
     prompt_addr = addr
-    asm = ".section .text\n"
+    asm = ".section .text.asm\n"
     with open(file_name, "r") as f:
         for line in f:
             print('[0x%04x] %s' % (prompt_addr, line.strip()))
